@@ -1,0 +1,8 @@
+transformers
+accelerate
+bitsandbytes
+torch
+youtube-transcript-api
+chromadb
+fastapi
+uvicorn
