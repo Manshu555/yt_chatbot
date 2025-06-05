@@ -8,7 +8,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     return;
   }
 
-  // Extract video ID from youtube.com or youtu.be URLs
+  // Extract video ID
   let videoId;
   if (url.hostname.includes("youtu.be")) {
     videoId = url.pathname.split("/")[1];
@@ -30,11 +30,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     responseBox.innerText = "Thinking...";
-    // Disable button to prevent multiple clicks
     document.getElementById("askBtn").disabled = true;
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/ask", {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout
+
+      const res = await fetch("http://localhost:8000/ask", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -43,8 +45,10 @@ document.addEventListener("DOMContentLoaded", async () => {
           query: query,
           video_id: videoId
         }),
-        signal: AbortSignal.timeout(10000) // 10-second timeout
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId); // Cancel the timeout after response is received
 
       const data = await res.json();
       if (data.error) {
@@ -56,7 +60,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       responseBox.innerText = "Error: Ascertain that the server is running and accessible.";
       console.error("Fetch error:", err);
     } finally {
-      // Re-enable button after request completes
       document.getElementById("askBtn").disabled = false;
     }
   });

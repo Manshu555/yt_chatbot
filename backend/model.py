@@ -2,7 +2,14 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from youtube_transcript_api import YouTubeTranscriptApi
 from chromadb import Client
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
+from youtube_transcript_api import (
+    YouTubeTranscriptApi,
+    TranscriptsDisabled,
+    NoTranscriptFound,
+)
+from chromadb import Client
 # --- Global model/tokenizer ---
 model = None
 tokenizer = None
@@ -22,30 +29,58 @@ def load_model():
         tokenizer.pad_token_id = tokenizer.eos_token_id
     print("Model loaded.")
 
+chroma_client = Client()
 def get_or_create_collection(video_id):
     collection_name = f"yt_transcript_{video_id}"
 
+    # If a Chroma collection already exists, reuse it
     try:
         collection = chroma_client.get_collection(collection_name)
         print(f"Using existing collection: {collection_name}")
-    except:
-        collection = chroma_client.create_collection(collection_name)
-        print(f"Created new collection: {collection_name}")
+        return collection
+    except Exception:
+        # (Collection doesn't exist yet; we will create it below.)
+        pass
+
+    # Attempt to fetch the transcript (manual first, then auto)
+    try:
+        transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
 
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            transcript_text = " ".join([item['text'] for item in transcript_list])
-        except Exception as e:
-            print(f"Transcript fetch error: {e}")
+            # Prefer a manually created English transcript
+            transcript = transcripts.find_manually_created_transcript(["en"])
+        except NoTranscriptFound:
+            # If no manual English transcript, fall back to generated
+            transcript = transcripts.find_generated_transcript(["en"])
+
+        try:
+            # This is where ExpatError can occur if raw_data is empty
+            transcript_list = transcript.fetch()
+        except Exception as fetch_err:
+            # Catches the xml.parsers.expat.ExpatError (and any other fetch-time error)
+            print(f"Transcript fetch error for video {video_id}: {fetch_err}")
             return None
 
-        sentences = transcript_text.split('.')
-        documents = [s.strip() for s in sentences if s.strip()]
-        ids = [f"chunk_{i}" for i in range(len(documents))]
+        # Build a single string from all the fetched snippets
+        transcript_text = " ".join([item.text for item in transcript_list])
 
-        if documents:
-            print(f"Adding {len(documents)} chunks to ChromaDB for video {video_id}")
-            collection.add(documents=documents, ids=ids)
+    except (TranscriptsDisabled, NoTranscriptFound) as e:
+        # These errors mean “no transcript available” at the list/lookup stage
+        print(f"Transcript lookup error for video {video_id}: {e}")
+        return None
+
+    # At this point, we have a valid transcript_text
+    collection = chroma_client.create_collection(collection_name)
+    print(f"Created new collection: {collection_name}")
+
+    # Split into sentences (or however you prefer to chunk)
+    sentences = transcript_text.split(".")
+    documents = [s.strip() for s in sentences if s.strip()]
+    ids = [f"chunk_{i}" for i in range(len(documents))]
+
+    if documents:
+        print(f"Adding {len(documents)} chunks to ChromaDB for video {video_id}")
+        collection.add(documents=documents, ids=ids)
 
     return collection
 
@@ -74,11 +109,18 @@ Answer:
 """
 
     print("Generating response with LLM...")
-    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    max_input_length = 800
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_input_length
+    ).to(model.device)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=256,
+            max_new_tokens=200,
             num_return_sequences=1,
             pad_token_id=tokenizer.eos_token_id,
             do_sample=True,
