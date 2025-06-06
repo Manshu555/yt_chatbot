@@ -1,35 +1,20 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-from youtube_transcript_api import YouTubeTranscriptApi
+import os
+import requests
+import subprocess
+import webvtt
 from chromadb import Client
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
-from youtube_transcript_api import (
-    YouTubeTranscriptApi,
-    TranscriptsDisabled,
-    NoTranscriptFound,
-)
-from chromadb import Client
-# --- Global model/tokenizer ---
-model = None
-tokenizer = None
+# --- Global variables ---
 chroma_client = Client()
+api_key = os.getenv("HUGGINGFACE_API_KEY")  # Ensure this is set in your environment
 
 def load_model():
-    global model, tokenizer
-    model_name = "distilgpt2"  # Lightweight model
-    print(f"Loading model: {model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        device_map="auto"  # Automatically map to CPU/GPU if available
-    )
-    # Set pad_token_id if not already set (required for distilgpt2)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-    print("Model loaded.")
+    """Validate Hugging Face API access."""
+    global api_key
+    if not api_key:
+        raise ValueError("HUGGINGFACE_API_KEY environment variable not set.")
+    print("Hugging Face API initialized for mistralai/Mixtral-8x7B-Instruct-v0.1.")
 
-chroma_client = Client()
 def get_or_create_collection(video_id):
     collection_name = f"yt_transcript_{video_id}"
 
@@ -39,41 +24,52 @@ def get_or_create_collection(video_id):
         print(f"Using existing collection: {collection_name}")
         return collection
     except Exception:
-        # (Collection doesn't exist yet; we will create it below.)
+        # Collection doesn't exist; create it below
         pass
 
-    # Attempt to fetch the transcript (manual first, then auto)
+    # Use yt-dlp to fetch subtitles
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    subtitle_file = f"{video_id}.en.vtt"
+
     try:
-        transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Run yt-dlp to download subtitles (English, auto-generated or manual)
+        subprocess.run([
+            "yt-dlp",
+            "--write-auto-sub",
+            "--sub-lang", "en",
+            "--skip-download",
+            "--sub-format", "vtt",
+            "-o", video_id,
+            video_url
+        ], check=True, capture_output=True, text=True)
 
-        try:
-            # Prefer a manually created English transcript
-            transcript = transcripts.find_manually_created_transcript(["en"])
-        except NoTranscriptFound:
-            # If no manual English transcript, fall back to generated
-            transcript = transcripts.find_generated_transcript(["en"])
-
-        try:
-            # This is where ExpatError can occur if raw_data is empty
-            transcript_list = transcript.fetch()
-        except Exception as fetch_err:
-            # Catches the xml.parsers.expat.ExpatError (and any other fetch-time error)
-            print(f"Transcript fetch error for video {video_id}: {fetch_err}")
+        # Check if subtitle file exists
+        if not os.path.exists(subtitle_file):
+            print(f"No English subtitles found for video {video_id}")
             return None
 
-        # Build a single string from all the fetched snippets
-        transcript_text = " ".join([item.text for item in transcript_list])
+        # Parse the .vtt file
+        transcript_text = ""
+        for caption in webvtt.read(subtitle_file):
+            transcript_text += caption.text + " "
 
-    except (TranscriptsDisabled, NoTranscriptFound) as e:
-        # These errors mean “no transcript available” at the list/lookup stage
-        print(f"Transcript lookup error for video {video_id}: {e}")
+        # Clean up the subtitle file
+        os.remove(subtitle_file)
+
+        print(f"Fetched transcript for video {video_id}: {len(transcript_text)} characters")
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error fetching subtitles for video {video_id} with yt-dlp: {e.stderr}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error while fetching subtitles for video {video_id}: {e}")
         return None
 
-    # At this point, we have a valid transcript_text
+    # Create new collection
     collection = chroma_client.create_collection(collection_name)
     print(f"Created new collection: {collection_name}")
 
-    # Split into sentences (or however you prefer to chunk)
+    # Split into sentences
     sentences = transcript_text.split(".")
     documents = [s.strip() for s in sentences if s.strip()]
     ids = [f"chunk_{i}" for i in range(len(documents))]
@@ -81,11 +77,15 @@ def get_or_create_collection(video_id):
     if documents:
         print(f"Adding {len(documents)} chunks to ChromaDB for video {video_id}")
         collection.add(documents=documents, ids=ids)
+    else:
+        print(f"No valid documents to add to ChromaDB for video {video_id}")
+        return None
 
     return collection
 
 def query_transcript(query_text, video_id, n_results=5):
-    global model, tokenizer
+    """Query the transcript and use Hugging Face API for mistralai/Mixtral-8x7B-Instruct-v0.1 to generate an answer."""
+    global api_key
 
     print(f"\nQuery: {query_text} | Video ID: {video_id}")
     collection = get_or_create_collection(video_id)
@@ -108,25 +108,41 @@ Question: {query_text}
 Answer:
 """
 
-    print("Generating response with LLM...")
-    max_input_length = 800
-    inputs = tokenizer(
-        prompt,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=max_input_length
-    ).to(model.device)
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=200,
-            num_return_sequences=1,
-            pad_token_id=tokenizer.eos_token_id,
-            do_sample=True,
-            top_k=50,
-            top_p=0.95
+    # Call Hugging Face Inference API for mistralai/Mixtral-8x7B-Instruct-v0.1
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 200,
+            "top_p": 0.95,
+            "top_k": 50,
+            "temperature": 0.7,
+            "return_full_text": False
+        }
+    }
+
+    try:
+        response = requests.post(
+            "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1",
+            headers=headers,
+            json=payload
         )
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    answer_start_index = response.find("Answer:")
-    return response[answer_start_index + len("Answer:"):].strip() if answer_start_index != -1 else response.strip()
+        response.raise_for_status()
+        result = response.json()
+        if isinstance(result, list) and len(result) > 0:
+            answer = result[0].get('generated_text', '').strip()
+        else:
+            answer = result.get('generated_text', '').strip()
+
+        # Extract the answer part after "Answer:" if present
+        answer_start_index = answer.find("Answer:")
+        if answer_start_index != -1:
+            answer = answer[answer_start_index + len("Answer:"):].strip()
+        return answer or "No valid response from the API."
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling Hugging Face API: {e}")
+        return "Error generating response from the API."

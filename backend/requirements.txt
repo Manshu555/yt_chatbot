@@ -6,3 +6,6 @@ youtube-transcript-api
 chromadb
 fastapi
 uvicorn
+requests
+python-dotenv
+yt-dlp
