@@ -9,3 +9,10 @@ uvicorn
 requests
 python-dotenv
 yt-dlp
+pydantic
+aiohttp
+beautifulsoup4
+webvtt-py
+pytest
+pytest-asyncio
+google-genai

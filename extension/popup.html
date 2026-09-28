@@ -2,17 +2,44 @@
 <html>
 <head>
   <title>YouTube Chatbot</title>
-  <style>
-    body { font-family: Arial; padding: 10px; width: 300px; }
-    input, button { width: 100%; margin-top: 5px; padding: 8px; }
-    #responseBox { margin-top: 10px; white-space: pre-wrap; }
-  </style>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h3>Ask about this video</h3>
-  <input id="queryInput" type="text" placeholder="Enter your question..." />
-  <button id="askBtn">Ask</button>
-  <div id="responseBox"></div>
+  <div class="header">
+    <h3>🎥 YT Chatbot</h3>
+  </div>
+
+  <div class="input-section">
+    <input id="queryInput" type="text" placeholder="Type your question..." />
+    <label class="toggle">
+      <input type="checkbox" id="validateToggle" checked>
+      <span>Validate externally</span>
+    </label>
+    <button id="askBtn">ASK QUESTION</button>
+  </div>
+
+  <div id="loadingBox" class="hidden">Thinking...</div>
+  <div id="errorBox" class="hidden error"></div>
+
+  <div id="responseContainer" class="hidden">
+    <div class="section-title">ANSWER</div>
+    <div id="answerBox"></div>
+
+    <div id="validationSection" class="hidden">
+      <hr>
+      <div id="validationBadge"></div>
+      <div id="sourceCount"></div>
+
+      <div class="section-title">VIDEO EVIDENCE</div>
+      <div id="videoEvidenceBox" class="evidence-box"></div>
+
+      <div class="section-title">EXTERNAL SOURCES</div>
+      <div id="sourcesContainer">
+        <button id="toggleSourcesBtn">Expand Sources</button>
+        <div id="sourcesList" class="hidden"></div>
+      </div>
+    </div>
+  </div>
 
   <script src="popup.js"></script>
 </body>

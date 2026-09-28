@@ -1,11 +1,18 @@
 import os
+import asyncio
 from fastapi import FastAPI
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from model import load_model, query_transcript
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+from schemas.models import QueryInput, AskResponse
+from routing.query_analyzer import requires_external_validation
+from rag.retriever import retrieve_transcript
+from rag.generator import load_model, generate_answer
+from search.web_search import search_web
+from validation.claim_extractor import extract_claims
+from validation.validator import validate_claims
+from config import TOP_K_WEB
+
 load_dotenv()
 
 app = FastAPI()
@@ -17,19 +24,104 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class QueryInput(BaseModel):
-    query: str
-    video_id: str
-
-# Load model at server start
 load_model()
 
-@app.post("/ask")
+def aggregate_status(validations):
+    if not validations:
+        return "UNVERIFIED"
+    statuses = [v.status for v in validations]
+    if "CONTRADICTED" in statuses:
+        return "CONTRADICTED"
+    if "PARTIALLY_SUPPORTED" in statuses:
+        return "PARTIALLY_SUPPORTED"
+    if all(s == "SUPPORTED" for s in statuses):
+        return "SUPPORTED"
+    if "SUPPORTED" in statuses:
+        return "PARTIALLY_SUPPORTED"
+    return "UNVERIFIED"
+
+def collect_evidence(validations):
+    evidence = []
+    for v in validations:
+        evidence.extend(v.supporting_evidence)
+        evidence.extend(v.contradicting_evidence)
+    return evidence
+
+@app.post("/ask", response_model=AskResponse)
 async def ask_question(data: QueryInput):
-    answer = query_transcript(data.query, data.video_id)
-    return {"answer": answer}
+    validation_required = requires_external_validation(
+        data.query,
+        data.validate_externally
+    )
+
+    if not validation_required:
+        video_evidence = await retrieve_transcript(
+            data.query,
+            data.video_id
+        )
+
+        answer = await generate_answer(
+            query=data.query,
+            video_evidence=video_evidence,
+            validation=None,
+            external_evidence=[]
+        )
+
+        return AskResponse(
+            answer=answer,
+            validation_required=False,
+            validation_status=None,
+            video_evidence=video_evidence,
+            claims=[],
+            sources=[]
+        )
+
+    # Parallel initial retrieval
+    video_task = retrieve_transcript(
+        data.query,
+        data.video_id
+    )
+
+    web_task = search_web(
+        data.query,
+        top_k=TOP_K_WEB
+    )
+
+    video_evidence, web_results = await asyncio.gather(
+        video_task,
+        web_task
+    )
+
+    # Extract relevant claims
+    claims = await extract_claims(
+        data.query,
+        video_evidence
+    )
+
+    # Validate claims
+    validation = await validate_claims(
+        claims,
+        web_results
+    )
+    
+    # Final answer — ONE LLM call
+    answer = await generate_answer(
+        query=data.query,
+        video_evidence=video_evidence,
+        validation=validation,
+        external_evidence=collect_evidence(validation)
+    )
+
+    return AskResponse(
+        answer=answer,
+        validation_required=True,
+        validation_status=aggregate_status(validation),
+        video_evidence=video_evidence,
+        claims=validation,
+        sources=web_results
+    )
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)
