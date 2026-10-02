@@ -1,46 +1,80 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>YouTube Chatbot</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>YT Chatbot</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="header">
-    <h3>🎥 YT Chatbot</h3>
-  </div>
-
-  <div class="input-section">
-    <input id="queryInput" type="text" placeholder="Type your question..." />
-    <label class="toggle">
-      <input type="checkbox" id="validateToggle" checked>
-      <span>Validate externally</span>
-    </label>
-    <button id="askBtn">ASK QUESTION</button>
-  </div>
-
-  <div id="loadingBox" class="hidden">Thinking...</div>
-  <div id="errorBox" class="hidden error"></div>
-
-  <div id="responseContainer" class="hidden">
-    <div class="section-title">ANSWER</div>
-    <div id="answerBox"></div>
-
-    <div id="validationSection" class="hidden">
-      <hr>
-      <div id="validationBadge"></div>
-      <div id="sourceCount"></div>
-
-      <div class="section-title">VIDEO EVIDENCE</div>
-      <div id="videoEvidenceBox" class="evidence-box"></div>
-
-      <div class="section-title">EXTERNAL SOURCES</div>
-      <div id="sourcesContainer">
-        <button id="toggleSourcesBtn">Expand Sources</button>
-        <div id="sourcesList" class="hidden"></div>
+  <header class="app-header">
+    <div class="brand-mark" aria-hidden="true"><i data-lucide="play"></i></div>
+    <div class="brand-copy"><h1>YT Chatbot</h1><p>AI-powered YouTube assistant</p></div>
+    <span id="videoStatus" class="connection-label hidden"><span></span>Video linked</span>
+  </header>
+  <main id="contentArea" class="content-area" tabindex="0">
+    <section id="videoContext" class="video-context hidden" aria-label="Current video">
+      <img id="videoThumbnail" class="video-thumbnail" alt="" width="64" height="44" referrerpolicy="no-referrer">
+      <div class="video-copy"><span class="eyebrow">CURRENT VIDEO</span><p id="videoTitle"></p></div>
+      <a id="videoLink" class="icon-button" target="_blank" rel="noopener noreferrer" aria-label="Open video in a new tab" title="Open video in a new tab"><i data-lucide="arrow-up-right"></i></a>
+    </section>
+    <section class="input-section" aria-label="Ask a question">
+      <label for="queryInput" class="composer-label">Your question</label>
+      <div class="composer">
+        <textarea id="queryInput" rows="3" placeholder="Ask anything about this video..."></textarea>
+        <i class="composer-icon" data-lucide="message-circle" aria-hidden="true"></i>
       </div>
+      <label class="validation-toggle" for="validateToggle">
+        <span class="toggle-icon" aria-hidden="true"><i data-lucide="shield-check"></i></span>
+        <span class="toggle-copy"><span>Validate externally</span><small>Cross-check with web sources</small></span>
+        <span class="switch"><input type="checkbox" id="validateToggle" role="switch" checked><span class="switch-track" aria-hidden="true"></span></span>
+      </label>
+      <button id="askBtn" class="primary-button" type="button"><i data-lucide="sparkles" aria-hidden="true"></i><span id="askButtonLabel">Ask about video</span><i class="submit-arrow" data-lucide="arrow-up-right" aria-hidden="true"></i></button>
+    </section>
+    <section id="emptyState" class="empty-state">
+      <div class="empty-mark" aria-hidden="true"><i data-lucide="messages-square"></i></div>
+      <h2>A question away from clarity.</h2>
+      <p>Understand, summarize, or verify this video.</p>
+      <div class="suggestions" aria-label="Suggested questions">
+        <button type="button" class="suggestion" data-question="Summarize this video in simple, concise bullet points."><i data-lucide="align-left" aria-hidden="true"></i>Summarize this video<i data-lucide="arrow-up-left" aria-hidden="true"></i></button>
+        <button type="button" class="suggestion" data-question="Explain the main concept in this video in simple terms."><i data-lucide="lightbulb" aria-hidden="true"></i>Explain the main concept<i data-lucide="arrow-up-left" aria-hidden="true"></i></button>
+        <button type="button" class="suggestion" data-question="What are the most important points in this video?"><i data-lucide="list-checks" aria-hidden="true"></i>Find important points<i data-lucide="arrow-up-left" aria-hidden="true"></i></button>
+      </div>
+    </section>
+    <section id="loadingBox" class="loading-state hidden" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <div><h2>Working on your question</h2><p id="loadingDetail">Analyzing video context...</p></div>
+      <div class="loading-lines" aria-hidden="true"><span></span><span></span><span></span></div>
+    </section>
+    <section id="errorBox" class="error-state hidden" role="alert"><i data-lucide="circle-alert" aria-hidden="true"></i><div><h2>Couldn't complete your request</h2><p id="errorMessage"></p></div></section>
+    <div id="responseContainer" class="response-container hidden" aria-live="polite" aria-busy="false">
+      <section class="answer-card" aria-labelledby="answerHeading">
+        <div class="section-heading"><i data-lucide="sparkles" aria-hidden="true"></i><h2 id="answerHeading">Answer</h2></div>
+        <div id="answerBox" class="answer-content"></div>
+      </section>
+      <section id="validationSection" class="result-section hidden" aria-labelledby="validationHeading">
+        <div class="section-heading"><i data-lucide="shield-check" aria-hidden="true"></i><h2 id="validationHeading">Validation</h2><span id="sourceCount" class="section-meta"></span></div>
+        <div id="validationBadge"></div><div id="validationSummary" class="validation-summary"></div><div id="claimList" class="claim-list"></div>
+      </section>
+      <section id="videoEvidenceSection" class="result-section hidden" aria-labelledby="videoEvidenceHeading">
+        <details class="video-evidence-details">
+          <summary class="section-heading"><i data-lucide="captions" aria-hidden="true"></i><h2 id="videoEvidenceHeading">Video evidence</h2><span id="videoEvidenceCount" class="section-meta"></span><i class="disclosure-icon" data-lucide="chevron-down" aria-hidden="true"></i></summary>
+          <div id="videoEvidenceBox" class="video-evidence-list"></div>
+        </details>
+      </section>
+      <section id="sourcesSection" class="result-section hidden" aria-labelledby="sourcesHeading">
+        <div class="section-heading"><i data-lucide="globe" aria-hidden="true"></i><h2 id="sourcesHeading">External sources</h2></div>
+        <div id="sourcesContainer">
+          <button id="toggleSourcesBtn" class="sources-toggle" type="button" aria-expanded="false" aria-controls="sourcesList"><span id="sourcesToggleLabel">Expand sources</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+          <div id="sourcesList" class="sources-list hidden"></div>
+        </div>
+      </section>
     </div>
-  </div>
-
+  </main>
+  <script src="vendor/lucide.min.js"></script>
+  <script src="vendor/marked.umd.js"></script>
+  <script src="vendor/purify.min.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -1,13 +1,15 @@
 import os
 import asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from schemas.models import QueryInput, AskResponse
 from routing.query_analyzer import requires_external_validation
 from rag.retriever import retrieve_transcript
-from rag.generator import load_model, generate_answer
+from rag.generator import load_model, generate_answer, AnswerGenerationError
+from google.genai.errors import APIError
 from search.web_search import search_web
 from validation.claim_extractor import extract_claims
 from validation.validator import validate_claims
@@ -25,6 +27,41 @@ app.add_middleware(
 )
 
 load_model()
+
+
+@app.exception_handler(APIError)
+async def gemini_api_error_handler(request: Request, error: APIError):
+    # Keep provider payloads (which may contain credentials) out of the response.
+    if error.code == 429:
+        status_code = 429
+        message = "Gemini quota or rate limit exceeded. Check your Gemini quota/billing or retry later."
+    elif error.code == 503:
+        status_code = 503
+        message = "Gemini is temporarily unavailable after bounded retries. Please try again later."
+    elif error.code in (401, 403):
+        status_code = 502
+        message = "Gemini authentication failed. Check the backend's GEMINI_API_KEY and API access."
+    elif error.code == 404:
+        status_code = 502
+        message = "The configured Gemini model is unavailable. Check GEMINI_MODEL in backend/.env."
+    else:
+        status_code = 502
+        message = "Gemini could not process the request. Check the backend's Gemini configuration."
+    return JSONResponse(status_code=status_code, content={"error": message})
+
+
+@app.exception_handler(AnswerGenerationError)
+async def answer_generation_error_handler(request: Request, error: AnswerGenerationError):
+    return JSONResponse(status_code=error.status_code, content={"error": str(error)})
+
+
+def require_video_evidence(video_evidence):
+    if not video_evidence:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not retrieve the video's English transcript. "
+            "Check subtitle availability, YouTube cookies, and the backend's network access.",
+        )
 
 def aggregate_status(validations):
     if not validations:
@@ -59,6 +96,7 @@ async def ask_question(data: QueryInput):
             data.query,
             data.video_id
         )
+        require_video_evidence(video_evidence)
 
         answer = await generate_answer(
             query=data.query,
@@ -91,6 +129,7 @@ async def ask_question(data: QueryInput):
         video_task,
         web_task
     )
+    require_video_evidence(video_evidence)
 
     # Extract relevant claims
     claims = await extract_claims(

@@ -1,9 +1,13 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Explicitly load .env from the same directory as config.py
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_BATCH_MODEL = os.getenv("OPENAI_BATCH_MODEL", OPENAI_MODEL)
 SEARCH_API_KEY = os.getenv("SEARCH_API_KEY")
 SEARCH_ENGINE_ID = os.getenv("SEARCH_ENGINE_ID")
 

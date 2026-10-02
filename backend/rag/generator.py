@@ -6,8 +6,18 @@ from schemas.models import TranscriptChunk, ClaimValidation, ExternalEvidence
 from typing import List, Optional
 from google import genai
 from google.genai.errors import APIError
+from rag.gemini_client import call_gemini_with_retry
 
 MODEL_ID = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+
+logger = logging.getLogger(__name__)
+
+
+class AnswerGenerationError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 502):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def load_model():
     """Validate Gemini API access."""
@@ -47,8 +57,6 @@ Question: {query}
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     
-    from rag.gemini_client import call_gemini_with_retry
-
     try:
         response = await call_gemini_with_retry(
             client=client,
@@ -56,14 +64,15 @@ Question: {query}
             prompt=prompt,
             config=genai.types.GenerateContentConfig(
                 temperature=0.7,
-                max_output_tokens=200,
+                max_output_tokens=1024,
                 top_p=0.95,
-                automatic_function_calling={"disable": True}
+                automatic_function_calling={"disable": True},
+                thinking_config={"thinking_level": "low"}
             )
         )
         
         if not response or not response.text:
-            return "No valid response from the API."
+            raise AnswerGenerationError("Gemini returned an empty answer. Please try again.")
             
         answer = response.text.strip()
 
@@ -72,14 +81,17 @@ Question: {query}
             if answer_start_index != -1:
                 answer = answer[answer_start_index + len("Answer:"):].strip()
             
-        return answer or "No valid response from the API."
+        if not answer:
+            raise AnswerGenerationError("Gemini returned an empty answer. Please try again.")
+        return answer
 
-    except APIError as e:
-        print(f"Gemini API error: {e.message}")
-        return "Error generating response from the API."
+    except (APIError, AnswerGenerationError):
+        raise
     except TimeoutError:
-        print("Gemini API request timed out.")
-        return "Error generating response from the API."
+        raise AnswerGenerationError("Gemini timed out. Please try again later.", 504) from None
     except Exception as e:
-        print(f"Unexpected error calling Gemini API: {e}")
-        return "Error generating response from the API."
+        logger.error("Gemini generation failed (%s).", type(e).__name__)
+        raise AnswerGenerationError(
+            "Could not connect to Gemini or complete answer generation. "
+            "Check the backend's network access and Gemini configuration."
+        ) from None

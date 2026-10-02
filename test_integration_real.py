@@ -6,13 +6,13 @@ import os
 # Ensure backend is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'backend')))
 
-from backend.routing.query_analyzer import requires_external_validation
-from backend.rag.retriever import retrieve_transcript
-from backend.search.web_search import search_web
-from backend.validation.claim_extractor import extract_claims
-from backend.validation.validator import validate_claims
-from backend.rag.generator import generate_answer
-from backend.app import aggregate_status, collect_evidence
+from routing.query_analyzer import requires_external_validation
+from rag.retriever import retrieve_transcript
+from search.web_search import search_web
+from validation.claim_extractor import extract_claims
+from validation.validator import validate_claims
+from rag.generator import generate_answer
+from app import aggregate_status, collect_evidence
 
 async def run_pipeline(query, video_id, validate_externally=False, mock_llm_responses=False):
     metrics = {}
@@ -34,7 +34,20 @@ async def run_pipeline(query, video_id, validate_externally=False, mock_llm_resp
         metrics['final_llm_ms'] = (t1 - t0) * 1000
         
         metrics['total_ms'] = sum(metrics.values())
-        return {"status": "SUCCESS (Normal RAG)", "metrics": metrics, "answer": answer}
+        
+        from rag.gemini_client import GeminiMetrics
+        metrics['total_api_calls'] = GeminiMetrics.api_calls
+        metrics['retries_429'] = GeminiMetrics.retries_429
+        metrics['retries_503'] = GeminiMetrics.retries_503
+        metrics['fail_fast_daily'] = GeminiMetrics.fail_fast_daily
+        
+        GeminiMetrics.api_calls = 0
+        GeminiMetrics.retries_429 = 0
+        GeminiMetrics.retries_503 = 0
+        GeminiMetrics.fail_fast_daily = 0
+        
+        status = "FAILED (API Error)" if answer.startswith("Error generating response") else "SUCCESS (Normal RAG)"
+        return {"status": status, "metrics": metrics, "answer": answer}
 
     # Parallel retrieval
     t_start_parallel = time.time()
@@ -79,7 +92,20 @@ async def run_pipeline(query, video_id, validate_externally=False, mock_llm_resp
     t1 = time.time()
     metrics['final_llm_ms'] = (t1 - t0) * 1000
 
-    metrics['total_ms'] = sum(v for k,v in metrics.items() if not k.endswith('_upper_bound') and k != 'total_ms')
+    from rag.gemini_client import GeminiMetrics
+    metrics['total_api_calls'] = GeminiMetrics.api_calls
+    metrics['retries_429'] = GeminiMetrics.retries_429
+    metrics['retries_503'] = GeminiMetrics.retries_503
+    metrics['fail_fast_daily'] = GeminiMetrics.fail_fast_daily
+    metrics['batch_claim_count'] = len(claims) if 'claims' in locals() else 0
+
+    # Reset metrics for next run
+    GeminiMetrics.api_calls = 0
+    GeminiMetrics.retries_429 = 0
+    GeminiMetrics.retries_503 = 0
+    GeminiMetrics.fail_fast_daily = 0
+
+    metrics['total_ms'] = sum(v for k,v in metrics.items() if not k.endswith('_upper_bound') and k != 'total_ms' and isinstance(v, float))
     
     return {
         "status": agg_status, 

@@ -2,6 +2,7 @@ import os
 import subprocess
 import time
 import webvtt
+import sys
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 5  # seconds
@@ -26,7 +27,7 @@ def get_transcript(video_id: str) -> str:
     for attempt in range(MAX_RETRIES):
         try:
             cmd = [
-                "yt-dlp",
+                sys.executable, "-m", "yt_dlp",
                 "--write-auto-sub",
                 "--sub-lang", "en",
                 "--skip-download",

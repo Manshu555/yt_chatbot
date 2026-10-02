@@ -60,6 +60,16 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+venv_*/
+
+# Local Word reports
+*.doc
+*.docx
+
+# Local Markdown documentation and reports
+/documentation.md
+/documentation_validated_rag.md
+/implementation_report.md
 
 # Environment Variables
 .env

@@ -16,3 +16,4 @@ webvtt-py
 pytest
 pytest-asyncio
 google-genai
+openai

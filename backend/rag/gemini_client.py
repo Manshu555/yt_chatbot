@@ -3,10 +3,30 @@ import re
 from google import genai
 from google.genai.errors import APIError
 
-# Global semaphore to limit concurrent requests across the entire process
-GEMINI_SEMAPHORE = asyncio.Semaphore(2)
+class GeminiMetrics:
+    api_calls = 0
+    retries_429 = 0
+    retries_503 = 0
+    fail_fast_daily = 0
+
+# Global semaphore to limit concurrent requests across the entire process.
+# It is created lazily per running event loop so tests and ASGI workers do not
+# reuse an asyncio primitive bound to a closed or different loop.
+_GEMINI_SEMAPHORE_BY_LOOP = {}
+GEMINI_SEMAPHORE = None
 MAX_RETRIES = 4
 BASE_BACKOFF = 4.0  # seconds
+
+def _get_gemini_semaphore() -> asyncio.Semaphore:
+    global GEMINI_SEMAPHORE
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    semaphore = _GEMINI_SEMAPHORE_BY_LOOP.get(loop_id)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(2)
+        _GEMINI_SEMAPHORE_BY_LOOP[loop_id] = semaphore
+    GEMINI_SEMAPHORE = semaphore
+    return semaphore
 
 def _parse_retry_delay(error_message: str) -> float:
     """Extract 'Please retry in X.Xs.' from the error message."""
@@ -31,8 +51,9 @@ async def call_gemini_with_retry(
     for attempt in range(MAX_RETRIES):
         delay = -1.0
         
-        async with GEMINI_SEMAPHORE:
+        async with _get_gemini_semaphore():
             try:
+                GeminiMetrics.api_calls += 1
                 response = await client.aio.models.generate_content(
                     model=model_id,
                     contents=prompt,
@@ -43,7 +64,19 @@ async def call_gemini_with_retry(
                 error_str = str(e)
                 # Differentiate 429 vs 503
                 if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                    # Fail fast on daily quota exhaustion
+                    normalized_error = error_str.lower().replace(" ", "").replace("_", "").replace("-", "")
+                    if (
+                        "perday" in normalized_error
+                        or "requestsperday" in normalized_error
+                        or "daily" in normalized_error
+                    ):
+                        GeminiMetrics.fail_fast_daily += 1
+                        print("Gemini API daily quota exhausted. Failing fast.")
+                        raise e
+                        
                     if attempt < MAX_RETRIES - 1:
+                        GeminiMetrics.retries_429 += 1
                         delay = _parse_retry_delay(error_str)
                         if delay <= 0:
                             delay = BASE_BACKOFF * (2 ** attempt)
@@ -53,6 +86,7 @@ async def call_gemini_with_retry(
                         raise e
                 elif "503" in error_str or "UNAVAILABLE" in error_str:
                     if attempt < MAX_RETRIES - 1:
+                        GeminiMetrics.retries_503 += 1
                         delay = BASE_BACKOFF * (2 ** attempt)
                         print(f"Gemini API high demand (503). Retrying in {delay:.2f}s... (Attempt {attempt+1}/{MAX_RETRIES})")
                     else:
