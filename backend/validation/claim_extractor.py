@@ -7,7 +7,7 @@ from prompts.claims import CLAIM_EXTRACTION_PROMPT
 from google import genai
 from google.genai.errors import APIError
 import os
-from rag.gemini_client import call_gemini_with_retry
+from rag.gemini_client import call_gemini_with_retry, is_daily_quota_error
 
 MODEL_ID = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
@@ -17,10 +17,6 @@ class ExtractedClaim(BaseModel):
 
 class ClaimExtractionResponse(BaseModel):
     claims: List[ExtractedClaim]
-
-def _is_daily_quota_error(error: Exception) -> bool:
-    normalized = str(error).lower().replace(" ", "").replace("_", "").replace("-", "")
-    return "perday" in normalized or "requestsperday" in normalized or "daily" in normalized
 
 def _fallback_claim(query: str, reason: str) -> List[Claim]:
     print(f"Claim extraction failed: {reason}. Falling back to UNVERIFIED-safe claim.")
@@ -55,6 +51,10 @@ def _normalize_claims(extracted: ClaimExtractionResponse) -> List[Claim]:
         claim_id = (item.id or f"claim_{index}").strip()
         if not claim_id or claim_id in seen_ids:
             claim_id = f"claim_{index}"
+            suffix = 1
+            while claim_id in seen_ids:
+                claim_id = f"claim_{index}_{suffix}"
+                suffix += 1
         seen_ids.add(claim_id)
         claims.append(Claim(id=claim_id, text=claim_text))
 
@@ -73,20 +73,21 @@ async def extract_claims(query: str, video_evidence: List[TranscriptChunk]) -> L
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     try:
-        response = await call_gemini_with_retry(
-            client=client,
-            model_id=MODEL_ID,
-            prompt=prompt,
-            config=genai.types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=800,
-                top_p=0.95,
-                response_mime_type="application/json",
-                response_schema=ClaimExtractionResponse,
-                automatic_function_calling={"disable": True},
-                thinking_config={"thinking_level": "low"}
+        async with client.aio:
+            response = await call_gemini_with_retry(
+                client=client,
+                model_id=MODEL_ID,
+                prompt=prompt,
+                config=genai.types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=800,
+                    top_p=0.95,
+                    response_mime_type="application/json",
+                    response_schema=ClaimExtractionResponse,
+                    automatic_function_calling={"disable": True},
+                    thinking_config={"thinking_level": "low"}
+                )
             )
-        )
         
         if not response:
             return _fallback_claim(query, "empty Gemini response object")
@@ -98,13 +99,13 @@ async def extract_claims(query: str, video_evidence: List[TranscriptChunk]) -> L
         return _fallback_claim(query, "schema contained no usable claims")
             
     except APIError as e:
-        print(f"Gemini API error extracting claims: {getattr(e, 'message', str(e))}")
-        if _is_daily_quota_error(e):
+        print(f"Gemini API error extracting claims (HTTP {e.code}).")
+        if is_daily_quota_error(e) or e.code in (401, 403, 404):
             raise
         return _fallback_claim(query, "Gemini API error")
     except (json.JSONDecodeError, ValidationError, ValueError) as e:
-        return _fallback_claim(query, str(e))
+        return _fallback_claim(query, type(e).__name__)
     except TimeoutError:
         return _fallback_claim(query, "Gemini API request timed out")
     except Exception as e:
-        return _fallback_claim(query, str(e))
+        return _fallback_claim(query, type(e).__name__)

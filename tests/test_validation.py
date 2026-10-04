@@ -1,5 +1,6 @@
 import pytest
 import json
+from google.genai.errors import APIError
 from unittest.mock import AsyncMock, patch, MagicMock
 from validation.validator import (
     BatchValidationResponse,
@@ -206,9 +207,9 @@ async def test_extraction_failure_claim_does_not_become_supported(mock_evidence_
         "results": [
             {
                 "claim_id": "claim_extraction_failed",
-                "status": "UNVERIFIED",
-                "evidence_ids": [],
-                "reason": "Extraction failed, no factual claim to validate.",
+                "status": "SUPPORTED",
+                "evidence_ids": ["ev_1"],
+                "reason": "Incorrectly treating the user query as an extracted fact.",
             }
         ]
     })
@@ -218,3 +219,43 @@ async def test_extraction_failure_claim_does_not_become_supported(mock_evidence_
             validations = await validate_claims(claims, web_results)
 
     assert validations[0].status == "UNVERIFIED"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["SUPPORTED", "PARTIALLY_SUPPORTED", "CONTRADICTED"])
+async def test_verdict_without_valid_evidence_is_unverified(mock_evidence_extractor, status):
+    claims = [Claim(id="claim_1", text="Factual claim")]
+    response = MagicMock()
+    response.parsed = BatchValidationResponse(results=[BatchValidationResult(claim_id="claim_1", status=status, evidence_ids=["unknown_id"], reason="Unsupported reference")])
+    with patch("validation.validator.extract_evidence", side_effect=mock_evidence_extractor), patch("validation.validator.call_gemini_with_retry", AsyncMock(return_value=response)):
+        results = await validate_claims(claims, [SearchResult(title="T", url="U", snippet="S")])
+    assert results[0].status == "UNVERIFIED"
+    assert not results[0].supporting_evidence
+    assert not results[0].contradicting_evidence
+
+@pytest.mark.asyncio
+async def test_daily_quota_during_validation_is_not_swallowed(mock_evidence_extractor):
+    error = APIError(429, {"error": {"message": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}})
+    call = AsyncMock(side_effect=error)
+    with patch("validation.validator.extract_evidence", side_effect=mock_evidence_extractor), patch("validation.validator.call_gemini_with_retry", call):
+        with pytest.raises(APIError) as caught:
+            await validate_claims([Claim(id="claim_1", text="Factual claim")], [SearchResult(title="T", url="U", snippet="S")])
+    assert caught.value is error
+    call.assert_awaited_once()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TimeoutError(), APIError(503, {"error": {"message": "UNAVAILABLE"}})])
+async def test_validation_timeout_or_503_remains_unverified(mock_evidence_extractor, error):
+    call = AsyncMock(side_effect=error)
+    with patch("validation.validator.extract_evidence", side_effect=mock_evidence_extractor), patch("validation.validator.call_gemini_with_retry", call):
+        results = await validate_claims([Claim(id="claim_1", text="Factual claim")], [SearchResult(title="T", url="U", snippet="S")])
+    assert results[0].status == "UNVERIFIED"
+    call.assert_awaited_once()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [401, 403, 404])
+async def test_validation_authentication_and_model_errors_propagate(mock_evidence_extractor, code):
+    call = AsyncMock(side_effect=APIError(code, {"error": {"message": "Configuration error"}}))
+    with patch("validation.validator.extract_evidence", side_effect=mock_evidence_extractor), patch("validation.validator.call_gemini_with_retry", call):
+        with pytest.raises(APIError):
+            await validate_claims([Claim(id="claim_1", text="Factual claim")], [SearchResult(title="T", url="U", snippet="S")])
+    call.assert_awaited_once()

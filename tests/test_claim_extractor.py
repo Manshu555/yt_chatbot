@@ -119,3 +119,24 @@ async def test_extract_claims_daily_quota_error_propagates(video_evidence):
     with patch("validation.claim_extractor.call_gemini_with_retry", AsyncMock(side_effect=error)):
         with pytest.raises(APIError):
             await extract_claims("What did the video say?", video_evidence)
+
+@pytest.mark.asyncio
+async def test_colliding_model_claim_ids_are_normalized_uniquely(video_evidence):
+    response = SimpleNamespace(parsed=ClaimExtractionResponse(claims=[
+        ExtractedClaim(id="claim_2", text="First factual claim."),
+        ExtractedClaim(id="claim_2", text="Second factual claim."),
+        ExtractedClaim(id="claim_2_1", text="Third factual claim."),
+    ]))
+    with patch("validation.claim_extractor.call_gemini_with_retry", AsyncMock(return_value=response)):
+        claims = await extract_claims("Question", video_evidence)
+    assert len(claims) == 3
+    assert len({claim.id for claim in claims}) == 3
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [401, 403, 404])
+async def test_authentication_and_model_errors_do_not_become_fallback_claims(video_evidence, code):
+    call = AsyncMock(side_effect=APIError(code, {"error": {"message": "Configuration error"}}))
+    with patch("validation.claim_extractor.call_gemini_with_retry", call):
+        with pytest.raises(APIError):
+            await extract_claims("Question", video_evidence)
+    call.assert_awaited_once()

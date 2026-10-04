@@ -17,6 +17,7 @@ YouTube -> English transcript -> ChromaDB retrieval
 ```
 
 - Transcript extraction uses `yt-dlp` and `webvtt`. ChromaDB stores and retrieves relevant transcript chunks in the running backend process.
+- Manual and automatic English captions, including regional English variants, are supported. The downloader selects one preferred caption track and skips auto-translations, instead of requesting every English variant. Non-English captions are not used as English evidence. Rolling caption repetitions are removed before indexing. Downloads use isolated temporary files, and blocking retrieval runs off the async server's event loop.
 - When validation is required, transcript retrieval and web search start together. Claims are extracted from video evidence, validated against external evidence, and included in final answer generation.
 - The normal validated path has **three logical Gemini calls**: claim extraction, one validation call for all claims, and final generation. Retries are additional API attempts within those calls, not extra pipeline stages.
 - Transcript-only queries use one final-generation call and skip claim extraction and external validation.
@@ -75,6 +76,10 @@ Use `.env.example` as the template for **`backend/.env`**. `backend/config.py` l
 | `MAX_CLAIMS` | Maximum extracted claims; default `3`. |
 | `TOP_K_WEB` | Maximum initial web search results; default `3`. |
 | `TOP_K_EVIDENCE` | Evidence selection limit; default `5`. |
+| `LLM_TIMEOUT_SECONDS` | Per-attempt Gemini timeout; default `30` seconds. |
+| `GEMINI_CALL_TIMEOUT_SECONDS` | Total time budget per logical Gemini call, including queueing and retries; default `40` seconds. |
+| `REQUEST_TIMEOUT_SECONDS` | Entire `/ask` time budget; default `150` seconds, shorter than the popup's 180-second timeout. |
+| `TRANSCRIPT_TIMEOUT_SECONDS` | Timeout per transcript downloader process; default `20` seconds. |
 | `OPENAI_API_KEY` | Used only by the separate offline Batch helper, not the live chatbot. |
 
 Without a Serper key, search attempts the optional `duckduckgo_search` provider. That package is not included in `backend/requirements.txt`; configure Serper for the installed project setup. `SEARCH_ENGINE_ID` remains in the template but is not used by the current search providers.
@@ -125,23 +130,27 @@ Missing transcript evidence returns HTTP 422 before Gemini generation. Provider 
 Run unit tests from the repository root:
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/ -v -o pythonpath=backend
+.\venv\Scripts\python.exe -m pytest tests/ -v
 node --test tests/test_popup.cjs
 node --check extension/popup.js
 ```
 
-The explicit `pythonpath` setting avoids collection errors for the backend's existing top-level imports. Latest local verification: **82 Python tests and 16 frontend tests passed**.
+`pytest.ini` sets the backend import path and limits default discovery to `tests/`. Unit tests use a dummy Gemini key and mocked responses; they do not require or consume your real Gemini key. Regression coverage includes request deadlines, SDK attempt counts, quota handling, caption parsing, concurrent retrieval, evidence selection, and all four validation statuses.
 
 `test_integration_real.py` is separate from the unit suite and exercises multiple real pipeline scenarios. It consumes provider quota and depends on live transcript, network, search, and Gemini availability; run it deliberately, not as part of routine unit checks.
 
 ## Retry Behavior and Troubleshooting
 
-- Gemini 429/503 handling is bounded to **four total attempts**, or three retries, per logical call. Default exponential delays are **4, 8, and 16 seconds**. A rate-limit response's parsed retry delay takes precedence for 429 errors.
+- Gemini 429/503 handling is bounded to **four total attempts**, or three retries, per logical call, subject to the call's time budget. Default exponential delays are **4, 8, and 16 seconds**. SDK retries are explicitly disabled to avoid nested retries. A parsed 429 retry hint takes precedence; if the delay exceeds the remaining budget, the error returns without scheduling another attempt.
 - Daily quota errors fail fast without retrying. `GeminiMetrics` records actual API attempts, 429/503 retries, and daily-quota fail-fast events across the running process.
+- Quota exhaustion during validation stops final generation instead of consuming another Gemini call. Authentication and unavailable-model errors also propagate immediately. Recoverable 503 or validation-timeout failures remain safely `UNVERIFIED`.
+- The backend returns an actionable HTTP 504 when its request deadline expires, before the popup's client timeout. Timeout and cancellation do not schedule additional logical calls.
+- Source pages are fetched once per URL within a validation request. HTML boilerplate is removed and passages are selected by claim-term overlap, rather than always taking the first 500 characters. Snippets remain a fallback when page access fails; evidence relevance is not a guarantee of factual support.
 - Provider unavailability during validation can result in safe `UNVERIFIED` claims; it does not imply that the claims are contradicted.
 - For backend connection errors, ensure the server is listening on port 8000 and Chrome has localhost host permissions.
 - `WinError 10013` indicates blocked socket access. Check firewall or sandbox restrictions and run the backend in a terminal with outbound network access.
 - For missing transcripts, check English automatic captions, YouTube rate limits, and cookie configuration. Browser-cookie extraction can fail because of encryption or a locked browser profile.
+- `yt-dlp[default]` includes the YouTube JavaScript challenge solver. A supported JavaScript runtime must also be installed; Deno is detected by default when available on `PATH`.
 - Restart the backend after changing API keys or model configuration. Never paste keys into logs, screenshots, or issues.
 - The current CORS configuration allows all origins for local development. Restrict it before exposing the backend publicly.
 

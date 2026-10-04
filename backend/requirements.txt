@@ -8,7 +8,7 @@ fastapi
 uvicorn
 requests
 python-dotenv
-yt-dlp
+yt-dlp[default]
 pydantic
 aiohttp
 beautifulsoup4

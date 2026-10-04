@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field, ValidationError
 from schemas.models import Claim, ClaimValidation, ExternalEvidence, SearchResult
 from search.evidence_extractor import extract_evidence
 from google import genai
-from rag.gemini_client import call_gemini_with_retry
+from google.genai.errors import APIError
+from rag.gemini_client import call_gemini_with_retry, is_daily_quota_error
 
 class BatchValidationResult(BaseModel):
     claim_id: str
@@ -62,10 +63,11 @@ async def validate_claims(claims: List[Claim], web_results_prefetched: List[Sear
     
     # 1. Gather all evidence for all claims
     all_evidence_tasks = []
+    page_cache = {}
     
     for claim in claims:
         for result in web_results_prefetched:
-            all_evidence_tasks.append(extract_evidence(claim.text, result))
+            all_evidence_tasks.append(extract_evidence(claim.text, result, page_cache=page_cache))
             
     all_evidence = await asyncio.gather(*all_evidence_tasks)
     
@@ -103,20 +105,21 @@ async def validate_claims(claims: List[Claim], web_results_prefetched: List[Sear
     client = genai.Client(api_key=gemini_key)
     
     try:
-        response = await call_gemini_with_retry(
-            client=client,
-            model_id=model_id,
-            prompt=prompt,
-            config=genai.types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=1000,
-                top_p=0.95,
-                response_mime_type="application/json",
-                response_schema=BatchValidationResponse,
-                automatic_function_calling={"disable": True},
-                thinking_config={"thinking_level": "low"}
+        async with client.aio:
+            response = await call_gemini_with_retry(
+                client=client,
+                model_id=model_id,
+                prompt=prompt,
+                config=genai.types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=1000,
+                    top_p=0.95,
+                    response_mime_type="application/json",
+                    response_schema=BatchValidationResponse,
+                    automatic_function_calling={"disable": True},
+                    thinking_config={"thinking_level": "low"}
+                )
             )
-        )
         
         if not response:
             raise ValueError("Empty response from batch validation.")
@@ -128,6 +131,9 @@ async def validate_claims(claims: List[Claim], web_results_prefetched: List[Sear
         result_dict = {r.get("claim_id"): r for r in results_data}
         
         for claim in claims:
+            if claim.id == "claim_extraction_failed":
+                validations.extend(_safe_unverified([claim], "Claim extraction failed; no factual claim was available to validate."))
+                continue
             res = result_dict.get(claim.id)
             if not res:
                 validations.append(ClaimValidation(
@@ -144,6 +150,9 @@ async def validate_claims(claims: List[Claim], web_results_prefetched: List[Sear
                 
             ev_ids = res.get("evidence_ids", [])
             matched_evidence = [evidence_map[eid] for eid in ev_ids if eid in evidence_map]
+            if status != "UNVERIFIED" and not matched_evidence:
+                validations.extend(_safe_unverified([claim], "Gemini returned a verdict without a valid evidence reference."))
+                continue
             
             supporting = matched_evidence if status in ["SUPPORTED", "PARTIALLY_SUPPORTED"] else []
             contradicting = matched_evidence if status == "CONTRADICTED" else []
@@ -160,8 +169,15 @@ async def validate_claims(claims: List[Claim], web_results_prefetched: List[Sear
         return validations
         
     except (json.JSONDecodeError, ValidationError, ValueError) as e:
-        print(f"Batch classification parse error: {e}")
+        print(f"Batch classification parse error ({type(e).__name__}).")
         return _safe_unverified(claims, "Validation failed due to malformed Gemini response.")
+    except APIError as e:
+        print(f"Batch classification API error (HTTP {e.code}).")
+        if is_daily_quota_error(e) or e.code in (401, 403, 404):
+            raise
+        return _safe_unverified(claims, "Validation failed due to API error.")
+    except TimeoutError:
+        return _safe_unverified(claims, "Validation timed out while waiting for Gemini.")
     except Exception as e:
-        print(f"Batch classification error: {e}")
+        print(f"Batch classification error ({type(e).__name__}).")
         return _safe_unverified(claims, "Validation failed due to API error.")

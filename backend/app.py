@@ -13,7 +13,7 @@ from google.genai.errors import APIError
 from search.web_search import search_web
 from validation.claim_extractor import extract_claims
 from validation.validator import validate_claims
-from config import TOP_K_WEB
+from config import TOP_K_WEB, REQUEST_TIMEOUT_SECONDS
 
 load_dotenv()
 
@@ -38,6 +38,9 @@ async def gemini_api_error_handler(request: Request, error: APIError):
     elif error.code == 503:
         status_code = 503
         message = "Gemini is temporarily unavailable after bounded retries. Please try again later."
+    elif error.code == 504:
+        status_code = 504
+        message = "Gemini exceeded its processing deadline. Please try again later."
     elif error.code in (401, 403):
         status_code = 502
         message = "Gemini authentication failed. Check the backend's GEMINI_API_KEY and API access."
@@ -86,6 +89,13 @@ def collect_evidence(validations):
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_question(data: QueryInput):
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
+            return await _run_pipeline(data)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="The backend request exceeded its time limit. Gemini or retrieval may be temporarily unavailable. Please try again later.") from None
+
+async def _run_pipeline(data: QueryInput):
     validation_required = requires_external_validation(
         data.query,
         data.validate_externally

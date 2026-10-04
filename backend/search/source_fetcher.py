@@ -1,15 +1,11 @@
 import aiohttp
-import re
+from bs4 import BeautifulSoup
 from schemas.models import SearchResult
 from config import PAGE_FETCH_TIMEOUT_SECONDS
 
 async def fetch_page_text(result: SearchResult) -> str:
     """Fetches a webpage and extracts text."""
     try:
-        # Quick mock bypass for mock search results
-        if result.url.startswith("https://example.com") or result.url.startswith("https://example.org"):
-            return f"This is mock page content for {result.url}. " + result.snippet
-            
         timeout = aiohttp.ClientTimeout(total=PAGE_FETCH_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(result.url, allow_redirects=True) as response:
@@ -21,12 +17,13 @@ async def fetch_page_text(result: SearchResult) -> str:
                     return ""
                     
                 text = await response.text()
-                # Basic HTML stripping
-                text = re.sub(r'<style.*?>.*?</style>', '', text, flags=re.DOTALL)
-                text = re.sub(r'<script.*?>.*?</script>', '', text, flags=re.DOTALL)
-                text = re.sub(r'<[^>]+>', ' ', text)
-                text = re.sub(r'\s+', ' ', text).strip()
-                return text[:10000] # Limit size
+                if 'text/html' in content_type:
+                    soup = BeautifulSoup(text, "html.parser")
+                    for element in soup(["script", "style", "nav", "header", "footer", "noscript", "form"]):
+                        element.decompose()
+                    content = soup.find("main") or soup.find("article") or soup
+                    text = content.get_text(separator="\n", strip=True)
+                return text[:10000]
     except Exception as e:
-        print(f"Error fetching {result.url}: {e}")
+        print(f"Error fetching source ({type(e).__name__}).")
         return ""

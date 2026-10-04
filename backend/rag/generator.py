@@ -58,18 +58,19 @@ Question: {query}
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     try:
-        response = await call_gemini_with_retry(
-            client=client,
-            model_id=MODEL_ID,
-            prompt=prompt,
-            config=genai.types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=1024,
-                top_p=0.95,
-                automatic_function_calling={"disable": True},
-                thinking_config={"thinking_level": "low"}
+        async with client.aio:
+            response = await call_gemini_with_retry(
+                client=client,
+                model_id=MODEL_ID,
+                prompt=prompt,
+                config=genai.types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=1024,
+                    top_p=0.95,
+                    automatic_function_calling={"disable": True},
+                    thinking_config={"thinking_level": "low"}
+                )
             )
-        )
         
         if not response or not response.text:
             raise AnswerGenerationError("Gemini returned an empty answer. Please try again.")
