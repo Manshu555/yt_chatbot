@@ -13,6 +13,7 @@ SEARCH_ENGINE_ID = os.getenv("SEARCH_ENGINE_ID")
 
 TOP_K_TRANSCRIPT = int(os.getenv("TOP_K_TRANSCRIPT", "5"))
 TOP_K_WEB = int(os.getenv("TOP_K_WEB", "3"))
+TOP_K_WEB_DISPLAY = max(1, int(os.getenv("TOP_K_WEB_DISPLAY", "3")))
 TOP_K_EVIDENCE = int(os.getenv("TOP_K_EVIDENCE", "5"))
 
 WEB_TIMEOUT_SECONDS = int(os.getenv("WEB_TIMEOUT_SECONDS", "3"))

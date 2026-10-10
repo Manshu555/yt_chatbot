@@ -28,6 +28,29 @@ def ask(validate=True):
     return client.post("/ask", json={"query": "What is a neural network?", "video_id": "aircAruvnKk", "validate_externally": validate})
 
 
+def test_ranked_sources_serialize_with_available_passage_and_display_limit(pipeline, monkeypatch):
+    from schemas.models import SearchResult, ExternalEvidence
+    monkeypatch.setattr(api, "TOP_K_WEB_DISPLAY", 2)
+    pipeline["search_web"].return_value = [
+        SearchResult(title="Unrelated", url="https://other.test"),
+        SearchResult(title="Parameters", snippet="Original snippet", url="https://source.test"),
+        SearchResult(title="Neural", url="https://partial.test"),
+        SearchResult(url="https://empty.test"),
+    ]
+    evidence = ExternalEvidence(source_title="Parameters", url="https://source.test", domain="source.test", passage="Neural network", relevance_score=0.1)
+    pipeline["validate_claims"].return_value[0].supporting_evidence = [evidence]
+    response = ask()
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source_display_limit"] == 2
+    assert [r["relevance_score"] for r in data["sources"]] == [100, 50, 0, 0]
+    assert data["sources"][0]["passage"] == "Neural network"
+    assert data["sources"][0]["snippet"] == "Original snippet"
+    assert "passage" in data["sources"][0]["relevance_reason"]
+    assert data["claims"][0]["supporting_evidence"][0]["relevance_score"] == 0.1
+    assert len(pipeline["validate_claims"].call_args.args[1]) == 4
+
+
 @pytest.mark.parametrize("validate", [False, True])
 def test_successful_pipeline_keeps_logical_call_count(pipeline, validate):
     response = ask(validate)
