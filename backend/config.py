@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+load_dotenv()
 
 # Explicitly load .env from the same directory as config.py
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
