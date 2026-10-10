@@ -263,3 +263,72 @@ test("manifest permits the loopback API and only loads the popup in its own page
   assert.equal(manifest.content_scripts, undefined);
   assert.match(fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8"), /<meta charset="utf-8">/);
 });
+
+test("external sources show the top three topical matches with reasons and passages", async () => {
+  const ui = await popup(async () => response(200, {
+    answer: "Answer", validation_required: true,
+    sources: [
+      { title: "Low", relevance_score: 10 },
+      { title: "First tie", url: "https://first.test", relevance_score: 80, relevance_reason: "Matched weights in title.", snippet: "Original snippet", passage: "Extracted passage" },
+      { title: "Best", relevance_score: 100 },
+      { title: "Second tie", relevance_score: 80 },
+      { title: "Zero", relevance_score: 0 },
+    ],
+  }));
+  await ui.ask();
+  const cards = ui.element("sourcesList").children;
+  assert.equal(cards.length, 3);
+  assert.equal(ui.element("sourceCount").innerText, "3 of 5 sources shown");
+  assert.match(cards[0].innerText, /^Best/);
+  assert.match(cards[0].innerText, /Topical match: 100\/100/);
+  assert.match(cards[1].innerText, /First tie/);
+  assert.match(cards[2].innerText, /^Second tie/);
+  assert.match(cards[1].innerText, /Original snippet/);
+  assert.match(cards[1].innerText, /Extracted passage/);
+  assert.match(cards[1].innerText, /Matched weights in title/);
+  assert.match(fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8"), /Scores do not measure credibility, accuracy or factual support/);
+});
+
+test("zero and missing scores are safe and fewer than three sources all render", async () => {
+  const ui = await popup(async () => response(200, {
+    answer: "Answer", validation_required: true,
+    sources: [{ title: "Missing" }, { title: "Zero", relevance_score: 0, relevance_reason: "No matching terms." }],
+  }));
+  await ui.ask();
+  const cards = ui.element("sourcesList").children;
+  assert.equal(cards.length, 2);
+  assert.match(cards[0].innerText, /^Zero/);
+  assert.match(cards[0].innerText, /Topical match: 0\/100/);
+  assert.match(cards[1].innerText, /Topical match: unavailable/);
+  assert.match(cards[1].innerText, /No relevance explanation available/);
+});
+
+test("source display honors the backend limit and rejects invalid scores and limits", async () => {
+  const ui = await popup(async () => response(200, { answer: "Answer", validation_required: true }));
+  for (const limit of [1, 4, 0, null, -1, "2"]) {
+    ui.context.testSources = [
+      { title: "Missing", relevance_score: null }, { title: "Out of range", relevance_score: 101 },
+      { title: "String", relevance_score: "90" }, { title: "Valid", relevance_score: 50 },
+      { title: "Negative", relevance_score: -1 }, { title: "Infinite", relevance_score: Infinity },
+    ];
+    ui.context.testLimit = limit;
+    vm.runInContext("renderSources(testSources, testLimit)", ui.context);
+    const cards = ui.element("sourcesList").children;
+    assert.equal(cards.length, limit === 1 || limit === 4 ? limit : 3);
+    assert.match(cards[0].innerText, /^Valid/);
+    if (cards.length > 1) assert.match(cards[1].innerText, /Topical match: unavailable/);
+  }
+  vm.runInContext("renderSources([])", ui.context);
+  assert.match(ui.element("sourcesList").innerText, /No external sources returned/);
+});
+
+test("relevance explanations and passages are rendered as text", async () => {
+  const ui = await popup(async () => response(200, {
+    answer: "Answer", validation_required: true,
+    sources: [{ title: "Source", relevance_score: 0, relevance_reason: "<script>bad()</script>", passage: "<img onerror=bad()>" }],
+  }));
+  await ui.ask();
+  const copy = ui.element("sourcesList").children[0].children[1];
+  assert.ok(copy.children.some(child => child.tagName === "P" && child.textContent === "<script>bad()</script>"));
+  assert.ok(copy.children.some(child => child.tagName === "P" && child.textContent === "<img onerror=bad()>"));
+});

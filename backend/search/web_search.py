@@ -85,7 +85,7 @@ class DDGSearchProvider(SearchProvider):
     async def search(self, query: str, top_k: int) -> List[SearchResult]:
         try:
             # Run the synchronous duckduckgo_search in a thread
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
             def _do_search():
                 with DDGS() as ddgs:
                     return list(ddgs.text(query, max_results=top_k))
