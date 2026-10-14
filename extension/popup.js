@@ -120,13 +120,21 @@ function renderClaims(claims) {
   });
 }
 
-function renderSources(sources) {
+function sourceRelevance(source) {
+  const score = source.relevance_score;
+  return typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 100 ? score : null;
+}
+
+function renderSources(sources, displayLimit = 3) {
   const list = document.getElementById("sourcesList");
   list.replaceChildren();
   if (!sources.length) {
     list.appendChild(textElement("p", "No external sources returned.", "empty-result"));
   }
-  sources.forEach(source => {
+  const limit = Number.isInteger(displayLimit) && displayLimit > 0 ? displayLimit : 3;
+  const ranked = [...sources].sort((a, b) => (sourceRelevance(b) ?? -1) - (sourceRelevance(a) ?? -1));
+  document.getElementById("sourceCount").innerText = `${Math.min(limit, sources.length)} of ${sources.length} sources shown`;
+  ranked.slice(0, limit).forEach(source => {
     const item = document.createElement("div");
     item.className = "source-item";
     const copy = document.createElement("div");
@@ -136,6 +144,10 @@ function renderSources(sources) {
     if (domain) copy.appendChild(textElement("p", domain, "source-domain"));
     copy.appendChild(sourceLink(source.title || source.url, source.url, "source-title"));
     if (source.snippet) copy.appendChild(textElement("p", source.snippet, "source-snippet"));
+    if (source.passage && source.passage !== source.snippet) copy.appendChild(textElement("p", source.passage, "source-snippet"));
+    const score = sourceRelevance(source);
+    copy.appendChild(textElement("p", score === null ? "Topical match: unavailable" : `Topical match: ${score}/100`, "source-relevance"));
+    copy.appendChild(textElement("p", source.relevance_reason || "No relevance explanation available.", "source-snippet"));
     item.append(iconElement("arrow-up-right"), copy);
     list.appendChild(item);
   });
@@ -304,10 +316,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       const badge = document.getElementById("validationBadge");
       const status = data.validation_status || "UNVERIFIED";
       badge.replaceChildren(statusBadge(status));
-      const sourceCount = (data.sources && data.sources.length) || 0;
-      document.getElementById("sourceCount").innerText = `${sourceCount} ${sourceCount === 1 ? "source" : "sources"} returned`;
       renderClaims(data.claims || []);
-      renderSources(data.sources || []);
+      renderSources(data.sources || [], data.source_display_limit);
     }
     refreshIcons();
   }

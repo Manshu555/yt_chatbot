@@ -75,6 +75,7 @@ Use `.env.example` as the template for **`backend/.env`**. `backend/config.py` l
 | `YOUTUBE_COOKIES_BROWSER` | Optional `yt-dlp` browser-cookie source when no valid cookie file is configured. |
 | `MAX_CLAIMS` | Maximum extracted claims; default `3`. |
 | `TOP_K_WEB` | Maximum initial web search results; default `3`. |
+| `TOP_K_WEB_DISPLAY` | Maximum ranked matches shown in the popup; default `3`, minimum `1`. Increase `TOP_K_WEB` to rank a larger candidate pool. |
 | `TOP_K_EVIDENCE` | Evidence selection limit; default `5`. |
 | `LLM_TIMEOUT_SECONDS` | Per-attempt Gemini timeout; default `30` seconds. |
 | `GEMINI_CALL_TIMEOUT_SECONDS` | Total time budget per logical Gemini call, including queueing and retries; default `40` seconds. |
@@ -122,6 +123,10 @@ After extension updates, reload it in `chrome://extensions/`, close the old popu
 ```
 
 Successful responses contain `answer`, `validation_required`, `validation_status`, `video_evidence`, `claims`, and `sources`. Claim results include their status, explanation, supporting evidence, and contradicting evidence.
+
+`sources` contains all retrieved results sorted by descending `relevance_score` (0–100), with provider order preserved for ties. Each includes a short `relevance_reason` and an available `passage`. `source_display_limit` controls how many matches the popup displays (default three); claim evidence remains available separately.
+
+Relevance is deterministic: lowercase alphanumeric tokens, using the evidence extractor's existing stopword list, are deduplicated. The score is `100 × matched unique question terms / unique question terms`, rounded to two decimals. Matches are counted across the title, snippet, and best question-matching passage from evidence returned by validation, when available. Empty questions or no matching text score zero. Repetition does not increase the score. Ranking adds no page fetches, dependencies, or LLM calls. This measures literal topical coverage, not semantic similarity, source credibility, accuracy, or whether a claim is true. Claim-specific evidence overlap retains its separate 0–1 scale.
 
 Missing transcript evidence returns HTTP 422 before Gemini generation. Provider and final-generation failures return non-success HTTP responses, not successful answers containing error text. Recoverable validation failures can leave claims `UNVERIFIED` while still allowing an evidence-contextualized final answer.
 

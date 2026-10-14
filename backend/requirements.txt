@@ -17,3 +17,4 @@ pytest
 pytest-asyncio
 google-genai
 openai
+ddgs

@@ -145,6 +145,7 @@ details[open] > summary .disclosure-icon { transform: rotate(180deg); }
 .source-item > svg { width: 14px; height: 14px; margin-top: 3px; color: var(--subtle); }
 .source-copy { flex: 1; min-width: 0; }
 .source-domain { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.source-relevance { margin-top: 6px; font-size: 11px; font-weight: 550; color: var(--muted); }
 .source-title { display: inline-block; font-size: 12px; font-weight: 550; margin-top: 3px; line-height: 1.5; overflow-wrap: anywhere; }
 .source-snippet { margin-top: 4px; font-size: 11px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
 .context-error .input-section, .context-error .empty-state { display: none; }

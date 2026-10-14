@@ -11,9 +11,10 @@ from rag.retriever import retrieve_transcript
 from rag.generator import load_model, generate_answer, AnswerGenerationError
 from google.genai.errors import APIError
 from search.web_search import search_web
+from search.relevance import rank_results
 from validation.claim_extractor import extract_claims
 from validation.validator import validate_claims
-from config import TOP_K_WEB, REQUEST_TIMEOUT_SECONDS
+from config import TOP_K_WEB, TOP_K_WEB_DISPLAY, REQUEST_TIMEOUT_SECONDS
 
 load_dotenv()
 
@@ -121,7 +122,8 @@ async def _run_pipeline(data: QueryInput):
             validation_status=None,
             video_evidence=video_evidence,
             claims=[],
-            sources=[]
+            sources=[],
+            source_display_limit=TOP_K_WEB_DISPLAY
         )
 
     # Parallel initial retrieval
@@ -167,7 +169,8 @@ async def _run_pipeline(data: QueryInput):
         validation_status=aggregate_status(validation),
         video_evidence=video_evidence,
         claims=validation,
-        sources=web_results
+        sources=rank_results(data.query, web_results, collect_evidence(validation)),
+        source_display_limit=TOP_K_WEB_DISPLAY
     )
 
 if __name__ == "__main__":
