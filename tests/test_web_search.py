@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from backend.search.web_search import SerperSearchProvider
 from schemas.models import SearchResult
 
@@ -108,3 +108,30 @@ async def test_serper_top_k_behavior(serper_provider):
     with patch('aiohttp.ClientSession', return_value=fake_session):
         results = await serper_provider.search("test query", top_k=3)
         assert len(results) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [[], asyncio.TimeoutError()])
+async def test_search_retries_ddg_when_serper_fails(monkeypatch, failure):
+    import backend.search.web_search as web
+    primary = web.SerperSearchProvider()
+    primary.search = AsyncMock(side_effect=failure if isinstance(failure, Exception) else None, return_value=[])
+    source = SearchResult(title="Article", url="https://source.test", snippet="Real result.")
+    backup = AsyncMock(return_value=[source])
+    monkeypatch.setattr(web, "get_search_provider", lambda: primary)
+    monkeypatch.setattr(web.DDGSearchProvider, "search", backup)
+    assert await web.search_web("topic", 3) == [source]
+    backup.assert_awaited_once_with("topic", 3)
+
+
+@pytest.mark.asyncio
+async def test_successful_primary_search_does_not_call_backup(monkeypatch):
+    import backend.search.web_search as web
+    primary = web.SerperSearchProvider()
+    source = SearchResult(title="Article", url="https://source.test")
+    primary.search = AsyncMock(return_value=[source])
+    backup = AsyncMock()
+    monkeypatch.setattr(web, "get_search_provider", lambda: primary)
+    monkeypatch.setattr(web.DDGSearchProvider, "search", backup)
+    assert await web.search_web("topic", 3) == [source]
+    backup.assert_not_awaited()

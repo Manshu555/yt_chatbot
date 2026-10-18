@@ -129,7 +129,7 @@ function renderSources(sources, displayLimit = 3) {
   const list = document.getElementById("sourcesList");
   list.replaceChildren();
   if (!sources.length) {
-    list.appendChild(textElement("p", "No external sources returned.", "empty-result"));
+    list.appendChild(textElement("p", "No sources could be retrieved after fallback searches. Please try again.", "empty-result"));
   }
   const limit = Number.isInteger(displayLimit) && displayLimit > 0 ? displayLimit : 3;
   const ranked = [...sources].sort((a, b) => (sourceRelevance(b) ?? -1) - (sourceRelevance(a) ?? -1));

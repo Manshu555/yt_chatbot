@@ -27,7 +27,9 @@ def _select_passage(claim: str, page_text: str, snippet: str) -> tuple[str, floa
 
 async def extract_evidence(claim_text: str, result: SearchResult, page_cache: dict | None = None) -> ExternalEvidence:
     """Extracts relevant evidence from a search result for a given claim."""
-    if page_cache is None:
+    if result.passage:
+        page_text = result.passage
+    elif page_cache is None:
         page_text = await fetch_page_text(result)
     else:
         if result.url not in page_cache:

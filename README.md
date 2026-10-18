@@ -5,11 +5,11 @@ A Chrome extension that answers questions using the current YouTube video's tran
 ## Live Gemini Pipeline
 
 ```text
-YouTube -> English transcript -> ChromaDB retrieval
-                                    |
-                          Optional web search
+YouTube -> English transcript -> MiniLM + ChromaDB cosine + BM25
                                     |
                            Claim extraction
+                                    |
+                   Optional web search + semantic reranking
                                     |
                      One batch validation call
                                     |
@@ -18,10 +18,10 @@ YouTube -> English transcript -> ChromaDB retrieval
 
 - Transcript extraction uses `yt-dlp` and `webvtt`. ChromaDB stores and retrieves relevant transcript chunks in the running backend process.
 - Manual and automatic English captions, including regional English variants, are supported. The downloader selects one preferred caption track and skips auto-translations, instead of requesting every English variant. Non-English captions are not used as English evidence. Rolling caption repetitions are removed before indexing. Downloads use isolated temporary files, and blocking retrieval runs off the async server's event loop.
-- When validation is required, transcript retrieval and web search start together. Claims are extracted from video evidence, validated against external evidence, and included in final answer generation.
+- When validation is required, claims extracted from transcript evidence ground external discovery. Semantic reranking and relevance filtering run before claim validation and final answer generation.
 - The normal validated path has **three logical Gemini calls**: claim extraction, one validation call for all claims, and final generation. Retries are additional API attempts within those calls, not extra pipeline stages.
 - Transcript-only queries use one final-generation call and skip claim extraction and external validation.
-- The validation toggle requests external validation. Even with it off, explicit verification or current-information wording can enable validation through the existing query router.
+- The validation toggle requests external sources for every question, including summaries. Explicit verification, external context or current-information wording enables research even with the toggle off.
 - Structured claim extraction and validation use Pydantic schemas. The default claim limit is three.
 - No live pipeline migration to OpenAI has been made.
 
@@ -74,8 +74,9 @@ Use `.env.example` as the template for **`backend/.env`**. `backend/config.py` l
 | `YOUTUBE_COOKIES_FILE` | Optional absolute path to a Netscape-format YouTube cookie file. |
 | `YOUTUBE_COOKIES_BROWSER` | Optional `yt-dlp` browser-cookie source when no valid cookie file is configured. |
 | `MAX_CLAIMS` | Maximum extracted claims; default `3`. |
-| `TOP_K_WEB` | Maximum initial web search results; default `3`. |
-| `TOP_K_WEB_DISPLAY` | Maximum ranked matches shown in the popup; default `3`, minimum `1`. Increase `TOP_K_WEB` to rank a larger candidate pool. |
+| `TOP_K_WEB` | Maximum relevant web results returned; default `3`. |
+| `WEB_CANDIDATE_COUNT` | Discovery pool before semantic filtering; default `10`, maximum `20`. |
+| `TOP_K_WEB_DISPLAY` | Maximum ranked matches shown in the popup; default `3`, minimum `1`. |
 | `TOP_K_EVIDENCE` | Evidence selection limit; default `5`. |
 | `LLM_TIMEOUT_SECONDS` | Per-attempt Gemini timeout; default `30` seconds. |
 | `GEMINI_CALL_TIMEOUT_SECONDS` | Total time budget per logical Gemini call, including queueing and retries; default `40` seconds. |
@@ -83,7 +84,7 @@ Use `.env.example` as the template for **`backend/.env`**. `backend/config.py` l
 | `TRANSCRIPT_TIMEOUT_SECONDS` | Timeout per transcript downloader process; default `20` seconds. |
 | `OPENAI_API_KEY` | Used only by the separate offline Batch helper, not the live chatbot. |
 
-Without a Serper key, search attempts the optional `duckduckgo_search` provider. That package is not included in `backend/requirements.txt`; configure Serper for the installed project setup. `SEARCH_ENGINE_ID` remains in the template but is not used by the current search providers.
+Without a Serper key, search uses `ddgs`, already included in `backend/requirements.txt`. `SEARCH_ENGINE_ID` remains in the template but is not used by the current search providers.
 
 Do not commit API keys, `.env` files, cookie exports, or virtual environments. Local Word reports and the removed Markdown documentation/report files are also ignored.
 
@@ -124,9 +125,9 @@ After extension updates, reload it in `chrome://extensions/`, close the old popu
 
 Successful responses contain `answer`, `validation_required`, `validation_status`, `video_evidence`, `claims`, and `sources`. Claim results include their status, explanation, supporting evidence, and contradicting evidence.
 
-`sources` contains all retrieved results sorted by descending `relevance_score` (0–100), with provider order preserved for ties. Each includes a short `relevance_reason` and an available `passage`. `source_display_limit` controls how many matches the popup displays (default three); claim evidence remains available separately.
+`sources` contains relevant filtered results sorted by descending `relevance_score` (0–100), with provider order preserved for ties. Each includes a short `relevance_reason` and an available `passage`. `source_display_limit` controls how many matches the popup displays (default three); claim evidence remains available separately.
 
-Relevance is deterministic: lowercase alphanumeric tokens, using the evidence extractor's existing stopword list, are deduplicated. The score is `100 × matched unique question terms / unique question terms`, rounded to two decimals. Matches are counted across the title, snippet, and best question-matching passage from evidence returned by validation, when available. Empty questions or no matching text score zero. Repetition does not increase the score. Ranking adds no page fetches, dependencies, or LLM calls. This measures literal topical coverage, not semantic similarity, source credibility, accuracy, or whether a claim is true. Claim-specific evidence overlap retains its separate 0–1 scale.
+Relevance combines MiniLM cosine similarity with dense/BM25 reciprocal rank fusion, original provider position, content availability and a small source-type prior. See the semantic retrieval section below for formulas, thresholds and fallbacks. This score is not a credibility or factual-support verdict. Claim-specific evidence overlap retains its separate 0–1 scale.
 
 Missing transcript evidence returns HTTP 422 before Gemini generation. Provider and final-generation failures return non-success HTTP responses, not successful answers containing error text. Recoverable validation failures can leave claims `UNVERIFIED` while still allowing an evidence-contextualized final answer.
 
@@ -185,3 +186,127 @@ extension/
   vendor/                 Bundled libraries and upstream licenses
 tests/                    Backend and frontend unit tests
 ```
+## Semantic retrieval upgrade
+
+The `/ask` request and response fields are unchanged. Video chunks remain in
+`video_evidence`, independent web pages in `sources`. The existing lexical
+`search/relevance.py` helpers remain for compatibility; `/ask` now uses
+`search/reranker.py` before validating claims.
+
+Previously, Chroma already generated real `all-MiniLM-L6-v2` vectors implicitly,
+using the default squared-L2 metric. It reused collections without checking
+embedding configuration and returned top chunks without filtering. Web discovery
+used Serper when `SEARCH_API_KEY` was set, otherwise DuckDuckGo (`ddgs`). Display
+ranking counted shared question words, including generic words such as
+"summarize", and retained zero-score pages. Those results also entered validation
+before being ranked. Summary requests inherited the frontend's default external
+validation toggle. This explains why summarizer products could appear as sources.
+
+Now one reused local ONNX MiniLM encoder explicitly embeds chunks and queries.
+Chroma stores normalized 384-dimensional vectors with cosine distance. Transcript
+retrieval merges vector and BM25 rankings using weighted reciprocal rank fusion:
+`0.75 * 61/(60+dense_rank) + 0.25 * 61/(60+BM25_rank)` (only positive scores
+participate). A chunk must pass the cosine threshold or have an exact lexical
+match. Duplicate text is suppressed. Generic summaries instead sample chunks
+in chronological order across the video, avoiding a topic search for "summary".
+Timestamp bounds, video ID, chunk index and source URL are stored in Chroma;
+returned chunk IDs now identify the actual stored chunks. Caption timestamps
+are approximate bounds when a chunk splits a long caption.
+
+External discovery searches the focused question and, when useful, a second short
+query enriched with the most closely related extracted claim. The provider results
+are interleaved before deduplication. Specific questions are ranked independently
+of other transcript claims; vague verification requests use extracted claims to
+resolve their subject. Facebook, Instagram, TikTok and Pinterest results are
+excluded from the initial search unless the question requests social sources or names one of those platforms.
+Every candidate without an existing passage gets a bounded page fetch, with its
+snippet retained if fetching fails. Overlapping 100-word windows from up to 10,000
+characters of page text and separate snippet windows supply the maximum content
+cosine. Titles contribute to BM25, but cannot supply semantic evidence themselves.
+Candidates must pass `WEB_MIN_SIMILARITY` and stay within
+`WEB_MAX_SIMILARITY_GAP` of the best content match; title-only candidates
+are rejected. Scores are `100 * (0.70*cosine + 0.20*RRF + 0.05/provider_rank +
+0.03*source_prior + 0.02*selected_page_passage)`. The RRF weights match transcript
+retrieval. The small source prior is 1 for `.gov`/`.edu`, otherwise 0.5; it is
+not a credibility verdict. Scores measure retrieval relevance, not factual
+support or a probability. Canonical URL deduplication removes fragments and
+tracking parameters; content deduplication and a summarizer-product intent
+filter remove additional noise. Relevant tool questions can still retrieve tools.
+Only selected pages enter claim validation, and their fetched passages are reused.
+If the strict result set is empty, discovery retries without domain exclusions
+and with simpler topic terms. The combined pool is ranked strictly again before
+relaxing the relevance thresholds. If necessary, the closest real results are
+returned with unchanged scores and a "low topical match" label. Social or tool
+results are used only as a last resort when no ordinary candidates exist; title-only
+results explicitly disclose that page content could not be checked. Page fetches,
+including failures, are cached across ranking attempts within the request.
+
+Every query with the external-validation toggle enabled runs external discovery,
+including summaries, whose searches are grounded in extracted video claims.
+Turning the toggle off opts out unless the question explicitly requests external
+evidence. Claim-extraction and validation failure behavior is preserved. If
+embedding fails, logged BM25 fallbacks rank question-term coverage. Serper failures
+or empty results also try DuckDuckGo with a separate bounded timeout. No candidate
+sources are fabricated: if both providers return no usable links even after retries,
+the answer remains video-grounded and the popup asks the user to retry.
+
+## Setup and migration
+
+From the repository root in PowerShell:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
+Copy-Item .env.example backend/.env  # only if backend/.env does not already exist
+# Edit backend/.env: set GEMINI_API_KEY and a GEMINI_MODEL available to your account.
+.venv\Scripts\python.exe -m uvicorn app:app --app-dir backend --host 0.0.0.0 --port 8000
+```
+
+No dependencies were added. Chroma's existing encoder needs its MiniLM ONNX
+weights on first use (downloaded by Chroma to its user cache); subsequent calls
+are local. The text embedding LRU holds at most 2,048 entries, batches misses,
+and bounds embedding inputs. Blocking inference and Chroma work run in threads.
+Use `--log-level info` plus Python logging configuration for `rag.retriever` and
+`search.reranker` to see retrieval diagnostics (never API keys).
+
+Collections use the new `yt_semantic_v2_<video_id>` namespace with model,
+metric and chunk-version metadata. Legacy `yt_transcript_*` collections are left
+intact and transcripts are reindexed on first access. Incompatible v2 metadata
+raises an explicit error; choose a new namespace/version and reindex rather than
+relabel old vectors. The existing `Client()` lifecycle is preserved: collections
+are in memory and restart requires retrieval/indexing again. There is no persistent
+database migration or deletion.
+
+`backend/.env` takes precedence over the root `.env`; shell environment variables
+take precedence over both. Configuration defaults:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `TRANSCRIPT_MIN_SIMILARITY` | `0.25` | Minimum cosine for semantic chunks |
+| `WEB_MIN_SIMILARITY` | `0.45` | Minimum cosine for external page content |
+| `WEB_MAX_SIMILARITY_GAP` | `0.15` | Maximum cosine gap below the strongest content match |
+| `WEB_MIN_LEXICAL_COVERAGE` | `0.5` | External coverage floor on embedding failure |
+| `WEB_CANDIDATE_COUNT` | `10` | Candidate pool, 1–20; raised toward TOP_K_WEB within that bound |
+| `TOP_K_TRANSCRIPT` / `TOP_K_WEB` | `5` / `3` | Maximum returned chunks/pages |
+
+These cosine thresholds are starting values for English MiniLM, not universally
+calibrated cutoffs. Tune with representative topics. Long summaries sample the
+transcript and may omit details; increase `TOP_K_TRANSCRIPT` for more coverage.
+Unavailable pages fall back to snippets, provider failures return no sources,
+and request/provider timeouts remain bounded. Serper needs `SEARCH_API_KEY`;
+DuckDuckGo needs network access and may rate-limit. Gemini and YouTube captions
+still require the existing credentials/network/subtitle availability.
+
+## Retrieval tests
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q
+# Optional local MiniLM smoke check (cached weights or first-run download required):
+$env:RUN_LOCAL_EMBEDDING_TESTS = '1'
+.venv\Scripts\python.exe -m pytest tests/test_semantic_retrieval.py -q
+```
+
+The deterministic tests inject known vectors into actual Chroma collections to
+test paraphrases, BM25 exact matches, summary coverage, migration checks,
+deduplication, tool rejection, relevance floors, and embedding failures without
+external calls. The opt-in smoke test additionally checks actual MiniLM inference;
+mocked vectors alone do not establish model quality on arbitrary videos.

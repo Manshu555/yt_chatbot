@@ -11,10 +11,10 @@ VIDEO_ID = "aircAruvnKk"
 
 def test_rolling_captions_remove_only_adjacent_repetition(monkeypatch):
     captions = [
-        SimpleNamespace(text="Neural networks learn\nNeural networks learn"),
-        SimpleNamespace(text="networks learn from examples"),
-        SimpleNamespace(text="Weights control connections"),
-        SimpleNamespace(text="Neural networks learn"),
+        SimpleNamespace(text="Neural networks learn\nNeural networks learn", start_in_seconds=0, end_in_seconds=2),
+        SimpleNamespace(text="networks learn from examples", start_in_seconds=2, end_in_seconds=4),
+        SimpleNamespace(text="Weights control connections", start_in_seconds=4, end_in_seconds=6),
+        SimpleNamespace(text="Neural networks learn", start_in_seconds=6, end_in_seconds=8),
     ]
     monkeypatch.setattr(transcript.webvtt, "read", lambda path: captions)
     assert transcript._parse_transcript("unused.vtt") == "Neural networks learn from examples Weights control connections Neural networks learn"
@@ -34,7 +34,7 @@ def test_regional_english_captions_use_isolated_files_and_bounded_command(monkey
         assert command[command.index("--extractor-retries") + 1] == "0"
         return SimpleNamespace(stderr="")
     monkeypatch.setattr(transcript.subprocess, "run", download)
-    monkeypatch.setattr(transcript.webvtt, "read", lambda path: [SimpleNamespace(text="Neural networks learn.")])
+    monkeypatch.setattr(transcript.webvtt, "read", lambda path: [SimpleNamespace(text="Neural networks learn.", start_in_seconds=0, end_in_seconds=2)])
     assert transcript.get_transcript(VIDEO_ID) == "Neural networks learn."
     assert paths and not paths[0].parent.exists()
 

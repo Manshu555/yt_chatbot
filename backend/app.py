@@ -11,10 +11,12 @@ from rag.retriever import retrieve_transcript
 from rag.generator import load_model, generate_answer, AnswerGenerationError
 from google.genai.errors import APIError
 from search.web_search import search_web
-from search.relevance import rank_results
+from search.reranker import rerank_results
+from search.query_planner import discovery_queries, fallback_queries, ranking_query
+from itertools import zip_longest
 from validation.claim_extractor import extract_claims
 from validation.validator import validate_claims
-from config import TOP_K_WEB, TOP_K_WEB_DISPLAY, REQUEST_TIMEOUT_SECONDS
+from config import TOP_K_WEB, TOP_K_WEB_DISPLAY, REQUEST_TIMEOUT_SECONDS, WEB_CANDIDATE_COUNT
 
 load_dotenv()
 
@@ -126,21 +128,11 @@ async def _run_pipeline(data: QueryInput):
             source_display_limit=TOP_K_WEB_DISPLAY
         )
 
-    # Parallel initial retrieval
-    video_task = retrieve_transcript(
+    video_evidence = await retrieve_transcript(
         data.query,
         data.video_id
     )
 
-    web_task = search_web(
-        data.query,
-        top_k=TOP_K_WEB
-    )
-
-    video_evidence, web_results = await asyncio.gather(
-        video_task,
-        web_task
-    )
     require_video_evidence(video_evidence)
 
     # Extract relevant claims
@@ -148,6 +140,24 @@ async def _run_pipeline(data: QueryInput):
         data.query,
         video_evidence
     )
+
+    # Ground vague references ("verify this video") in real extracted claims.
+    claim_texts = [claim.text for claim in claims if claim.id != "claim_extraction_failed"]
+    pools = await asyncio.gather(*(search_web(query, top_k=WEB_CANDIDATE_COUNT)
+                                   for query in discovery_queries(data.query, claim_texts)))
+    # Interleave provider ranks so a second query gets a fair share of the pool.
+    candidates = [result for row in zip_longest(*pools) for result in row if result is not None]
+    rank_options = {"top_k": TOP_K_WEB, "context": ranking_query(data.query, claim_texts), "page_cache": {}}
+    web_results = await rerank_results(data.query, candidates, **rank_options)
+    if not web_results:
+        # First recover recall with broader searches, then retain the closest
+        # real results if strict thresholds still reject the entire pool.
+        extra_pools = await asyncio.gather(*(search_web(query, top_k=WEB_CANDIDATE_COUNT)
+                                           for query in fallback_queries(data.query, claim_texts)))
+        candidates.extend(result for row in zip_longest(*extra_pools) for result in row if result is not None)
+        web_results = await rerank_results(data.query, candidates, **rank_options)
+        if not web_results and candidates:
+            web_results = await rerank_results(data.query, candidates, allow_weak=True, **rank_options)
 
     # Validate claims
     validation = await validate_claims(
@@ -169,7 +179,7 @@ async def _run_pipeline(data: QueryInput):
         validation_status=aggregate_status(validation),
         video_evidence=video_evidence,
         claims=validation,
-        sources=rank_results(data.query, web_results, collect_evidence(validation)),
+        sources=web_results,
         source_display_limit=TOP_K_WEB_DISPLAY
     )
 
