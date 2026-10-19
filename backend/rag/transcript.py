@@ -12,9 +12,17 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 5  # seconds
 
 
+class TranscriptText(str):
+    def __new__(cls, text, segments):
+        instance = super().__new__(cls, text)
+        instance.segments = segments
+        return instance
+
+
 def _parse_transcript(subtitle_file: str) -> str:
     # Rolling automatic captions repeat adjacent lines and overlapping words.
     words = []
+    segments = []
     previous_line = None
     for caption in webvtt.read(subtitle_file):
         for line in caption.text.splitlines():
@@ -29,7 +37,10 @@ def _parse_transcript(subtitle_file: str) -> str:
                     overlap = count
                     break
             words.extend(incoming[overlap:])
-    return " ".join(words)
+            if incoming[overlap:]:
+                segments.append({"text": " ".join(incoming[overlap:]),
+                                 "start": caption.start_in_seconds, "end": caption.end_in_seconds})
+    return TranscriptText(" ".join(words), segments)
 
 
 def get_transcript(video_id: str) -> str:

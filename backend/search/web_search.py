@@ -78,7 +78,7 @@ class SerperSearchProvider(SearchProvider):
             print("Search API request timed out.")
             return []
         except Exception as e:
-            print(f"Search API request failed: {e}")
+            print(f"Search API request failed ({type(e).__name__}).")
             return []
 
 class DDGSearchProvider(SearchProvider):
@@ -90,7 +90,7 @@ class DDGSearchProvider(SearchProvider):
                 with DDGS() as ddgs:
                     return list(ddgs.text(query, max_results=top_k))
                     
-            results_data = await asyncio.to_thread(_do_search)
+            results_data = await asyncio.wait_for(asyncio.to_thread(_do_search), timeout=WEB_TIMEOUT_SECONDS)
             
             results = []
             for item in results_data:
@@ -104,7 +104,7 @@ class DDGSearchProvider(SearchProvider):
                 ))
             return results
         except Exception as e:
-            print(f"DDG Search failed: {e}")
+            print(f"DDG Search failed ({type(e).__name__}).")
             return []
 
 def get_search_provider() -> SearchProvider:
@@ -114,8 +114,14 @@ def get_search_provider() -> SearchProvider:
 
 async def search_web(query: str, top_k: int) -> List[SearchResult]:
     provider = get_search_provider()
-    try:
-        return await provider.search(query, top_k)
-    except Exception as e:
-        print(f"Web search failed: {e}")
-        return []
+    providers = [provider]
+    if isinstance(provider, SerperSearchProvider):
+        providers.append(DDGSearchProvider())
+    for candidate_provider in providers:
+        try:
+            results = await asyncio.wait_for(candidate_provider.search(query, top_k), timeout=WEB_TIMEOUT_SECONDS)
+            if results:
+                return results
+        except Exception as e:
+            print(f"Web search failed ({type(e).__name__}).")
+    return []

@@ -17,7 +17,7 @@ class SearchResult(BaseModel):
     snippet: str = ""
     domain: Optional[str] = None
     passage: str = ""
-    relevance_score: float = Field(default=0, ge=0, le=100, description="Topical text match to the question, not credibility or factual support.")
+    relevance_score: float = Field(default=0, ge=0, le=100, description="Retrieval relevance to the question, not credibility or factual support.")
     relevance_reason: str = "Relevance has not been calculated."
 
     @field_validator("title", "snippet", "passage", mode="before")

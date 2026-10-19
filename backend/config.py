@@ -1,9 +1,8 @@
 import os
 from dotenv import load_dotenv
-load_dotenv()
-
-# Explicitly load .env from the same directory as config.py
+# Prefer backend/.env; shell-provided variables still take precedence.
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -26,3 +25,10 @@ TRANSCRIPT_TIMEOUT_SECONDS = float(os.getenv("TRANSCRIPT_TIMEOUT_SECONDS", "20")
 
 VALIDATION_ENABLED_BY_DEFAULT = os.getenv("VALIDATION_ENABLED_BY_DEFAULT", "true").lower() == "true"
 MAX_CLAIMS = int(os.getenv("MAX_CLAIMS", "3"))
+
+# Cosine similarity, not distance; calibrate on representative video topics.
+TRANSCRIPT_MIN_SIMILARITY = float(os.getenv("TRANSCRIPT_MIN_SIMILARITY", "0.25"))
+WEB_MIN_SIMILARITY = float(os.getenv("WEB_MIN_SIMILARITY", "0.45"))
+WEB_MAX_SIMILARITY_GAP = float(os.getenv("WEB_MAX_SIMILARITY_GAP", "0.15"))
+WEB_MIN_LEXICAL_COVERAGE = float(os.getenv("WEB_MIN_LEXICAL_COVERAGE", "0.5"))
+WEB_CANDIDATE_COUNT = min(20, max(1, TOP_K_WEB, int(os.getenv("WEB_CANDIDATE_COUNT", "10"))))
