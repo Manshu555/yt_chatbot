@@ -77,10 +77,9 @@ Question: {query}
             
         answer = response.text.strip()
 
-        if "Answer:" in answer and not validation:
-            answer_start_index = answer.find("Answer:")
-            if answer_start_index != -1:
-                answer = answer[answer_start_index + len("Answer:"):].strip()
+        # Only drop a leading "Answer:" label; never discard earlier content.
+        if not validation and answer.startswith("Answer:"):
+            answer = answer[len("Answer:"):].strip()
             
         if not answer:
             raise AnswerGenerationError("Gemini returned an empty answer. Please try again.")
