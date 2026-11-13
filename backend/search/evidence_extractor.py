@@ -27,14 +27,16 @@ def _select_passage(claim: str, page_text: str, snippet: str) -> tuple[str, floa
 
 async def extract_evidence(claim_text: str, result: SearchResult, page_cache: dict | None = None) -> ExternalEvidence:
     """Extracts relevant evidence from a search result for a given claim."""
-    if result.passage:
-        page_text = result.passage
-    elif page_cache is None:
+    # result.passage is the best window for the *question*; claims need their own
+    # passage, so search the full page (fetched once per URL) as well.
+    if page_cache is None:
         page_text = await fetch_page_text(result)
     else:
         if result.url not in page_cache:
             page_cache[result.url] = asyncio.create_task(fetch_page_text(result))
         page_text = await page_cache[result.url]
+    if result.passage:
+        page_text = f"{result.passage}\n{page_text}"
     
     passage, score = _select_passage(claim_text, page_text, result.snippet)
     
