@@ -174,7 +174,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (url.hostname === "youtu.be") {
     videoId = url.pathname.split("/")[1];
   } else {
-    videoId = new URLSearchParams(url.search).get("v");
+    const pathMatch = url.pathname.match(/^\/(?:shorts|live|embed)\/([A-Za-z0-9_-]{11})/);
+    videoId = new URLSearchParams(url.search).get("v") || (pathMatch && pathMatch[1]);
   }
   
   if (!videoId) {

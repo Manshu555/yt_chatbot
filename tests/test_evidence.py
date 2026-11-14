@@ -58,3 +58,12 @@ async def test_source_html_removes_boilerplate_and_decodes_entities(monkeypatch)
     result = await fetcher.fetch_page_text(SearchResult(title="Source", url="https://example.com/article", snippet="Snippet"))
     assert result == "Weights & biases learn."
     assert "mock page" not in result
+
+
+@pytest.mark.asyncio
+async def test_prefetched_passage_does_not_hide_claim_specific_text(monkeypatch):
+    body = "Weights control connections.\nBiases set activation thresholds in each neuron."
+    monkeypatch.setattr(extractor, "fetch_page_text", AsyncMock(return_value=body))
+    source = SearchResult(title="S", url="https://source.test/a", snippet="x", passage="Weights control connections.")
+    evidence = await extractor.extract_evidence("Biases set activation thresholds.", source)
+    assert "Biases set activation thresholds" in evidence.passage

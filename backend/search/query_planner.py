@@ -33,7 +33,7 @@ def ranking_query(question, claims=()):
 def discovery_queries(question, claims=()):
     claims = [claim for claim in claims if claim.strip()]
     primary = ranking_query(question, claims)
-    queries = [primary]
+    queries = [primary] if terms(primary) else []
     # A second, short transcript-grounded query helps paraphrases without
     # concatenating every claim into an over-constrained search.
     topic = set(terms(primary))
@@ -43,7 +43,7 @@ def discovery_queries(question, claims=()):
         secondary = " ".join(dict.fromkeys(terms(primary) + terms(best)))
         if len(secondary) <= 240 and set(terms(secondary)) != topic:
             queries.append(secondary)
-    if not wants_social_sources(question):
+    if queries and not wants_social_sources(question):
         exclusions = " ".join(f"-site:{host}" for host in SOCIAL_HOSTS)
         queries = [f"{query} {exclusions}" for query in queries]
     return queries
@@ -52,7 +52,7 @@ def discovery_queries(question, claims=()):
 def fallback_queries(question, claims=()):
     """Retry without domain exclusions and simplify long conversational queries."""
     primary = ranking_query(question, claims)
-    queries = [primary]
+    queries = [primary] if terms(primary) else []
     compact = " ".join(dict.fromkeys(terms(primary)))
     compact = " ".join(compact.split()[:12])
     if compact and compact.lower() != primary.lower():
